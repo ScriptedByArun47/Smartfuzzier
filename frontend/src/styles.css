@@ -1,0 +1,41 @@
+body {
+  font-family: sans-serif;
+  margin: 0;
+  padding: 0;
+}
+.app {
+  max-width: 900px;
+  margin: auto;
+  padding: 20px;
+}
+.scan-form input.url-input {
+  width: 70%;
+  padding: 8px;
+  margin-right: 8px;
+}
+.scan-form .btn {
+  padding: 8px 16px;
+}
+.loading {
+  margin-top: 20px;
+  font-weight: bold;
+}
+.results-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 10px;
+}
+.results-table th, .results-table td {
+  border: 1px solid #ccc;
+  padding: 4px 8px;
+}
+.mono {
+  font-family: monospace;
+}
+.link-btn {
+  cursor: pointer;
+  color: blue;
+  background: none;
+  border: none;
+  text-decoration: underline;
+}
