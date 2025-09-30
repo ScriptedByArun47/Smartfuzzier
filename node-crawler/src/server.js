@@ -18,6 +18,8 @@
 const express = require('express');
 const cors = require('cors');
 const { chromium } = require('playwright');
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -324,14 +326,32 @@ app.post('/crawl', async (req, res) => {
     });
 
     await browser.close();
-    return res.json({
+
+    const responseData ={
       url: targetUrl,
       navigatedTo: pageUrl,
       navigation: navResult,
-      counts: { forms: normalizedForms.length, links: linksSeen.size, networkRequests: networkRequests.length },
+      counts:{
+        forms:normalizedForms.length,
+        links: linksSeen.size,
+        networkRequests:networkRequests.length
+      },
       forms: normalizedForms,
       endpoints
-    });
+
+    };
+    try{
+      const filePath =path.join(__dirname, "param_templates.json");
+      fs.writeFileSync(filePath,JSON.stringify(responseData, null, 2));
+      console.log(`Response data written to ${filePath}`);
+    
+      
+    }
+    catch(err){
+      console.error("Error writing to file:", err);
+    }
+    return res.json(responseData);
+
   } catch (err) {
     // ensure browser closed
     try { if (browser) await browser.close(); } catch (e) {}
