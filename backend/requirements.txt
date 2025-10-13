@@ -4,3 +4,11 @@ httpx
 beautifulsoup4
 sqlalchemy
 aiosqlite
+google-generativeai
+numpy
+requests
+scikit-learn
+pandas
+joblib
+python-multipart
+

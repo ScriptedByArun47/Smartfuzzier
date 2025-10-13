@@ -47,7 +47,7 @@ def generate_payloads(param_file, payload_file, model="gemini-2.5-flash"):
     f"Here are the parameters with url:\n{json.dumps(templates, indent=2)} using this you can analyze url methods and types of exploits function can use \n"
     f"Here are some sample payloads:\n{json.dumps(payload)}"
     "responce be like curl command that to performs request  here the example format:\n"
-    """curl -X POST -d "uname=admin&pass=' OR '1'='1'" http://testphp.vulnweb.com/userinfo.php \n\n"""
+    """curl   -sS -i -X POST -d "uname=admin&pass=' OR '1'='1'" http://testphp.vulnweb.com/userinfo.php  \n\n"""
 )
     # 3. Call Gemini
     try:
@@ -66,9 +66,9 @@ def generate_payloads(param_file, payload_file, model="gemini-2.5-flash"):
 
 if __name__ == "__main__":
     # NOTE: Ensure this file path is correct on the machine running the code
-    param_file_path = r"D:\EthicalHacking\smartfuzzer\node-crawler\src\param_templates_with_predicted_types.json"
-    payload_file_path = r"D:\EthicalHacking\smartfuzzer\backend\app\ml\payload_library.json"   
-    output_path = r"D:\EthicalHacking\smartfuzzer\node-crawler\src\payloads_vulners.txt"
+    param_file_path = r"/home/arunexploit/develop/Smartfuzzier/node-crawler/src/param_templates_with_predicted_types.json"
+    payload_file_path = r"/home/arunexploit/develop/Smartfuzzier/backend/app/ml/payload_library.json"   
+    output_path = r"/home/arunexploit/develop/Smartfuzzier/node-crawler/src/payloads_vulners.txt"
     print(f"Generating payloads using parameters from: {param_file_path}\n")
     print(f"Payloads using to: {payload_file_path}\n")
     
