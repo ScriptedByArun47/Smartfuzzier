@@ -1,18 +1,7 @@
 // node-crawler/src/server.js
 /**
- * Advanced Node crawler (Playwright + Express)
- *
- * Features:
- *  - resilient navigation (networkidle -> load -> domcontentloaded fallback)
- *  - resource blocking (images/fonts/styles etc.) to reduce noise
- *  - same-host filtering by default (set allowNonLocal=true to allow other hosts)
- *  - extracts: forms (action, method, params{name,type,required,options}), links (with query keys)
- *  - captures network requests (method, postData present) and response status
- *  - normalizes & dedupes endpoints
- *  - configurable via POST body:
- *      { url, headless=true, timeoutMs=60000, allowNonLocal=false, systemChromePath=null, maxEndpoints=200 }
- *
- * Safety note: This is for lab/authorized testing only. By default non-local hosts are blocked.
+ * Advanced Node crawler (Playwright + Express) and Pipeline Orchestrator
+ * * Flow: /crawl -> server.js(Crawl) -> param_type_pipeline.py -> payload_gen.py -> run_raw_cmds.sh
  */
 
 const express = require('express');
@@ -20,8 +9,72 @@ const cors = require('cors');
 const { chromium } = require('playwright');
 const fs = require("fs");
 const path = require("path");
-
+// ADDED: For executing external Python/Bash scripts
+const { execSync } = require('child_process');
 const app = express();
+const SCRIPTS_ROOT = process.env.SCRIPTS_ROOT
+  ? path.resolve(process.env.SCRIPTS_ROOT)
+  : path.resolve(__dirname, '..', '..', '..'); // adjust upward levels to reach backend root
+
+// convenience alias (optional)
+const SCRIPTS_DIR = SCRIPTS_ROOT;
+
+// Example resolved paths (use path.join for segments)
+const MODEL_PATH = path.resolve(SCRIPTS_DIR, 'app', 'node-crawler', 'src', 'param_type_model.joblib');
+const PAYLOAD_LIB_PATH = path.resolve(SCRIPTS_DIR, 'app', 'ml', 'payload_library.json');
+const TEMPLATE_INPUT_FILE = path.resolve(SCRIPTS_DIR, 'app', 'node-crawler', 'src', 'param_templates.json');
+const TEMPLATE_OUTPUT_FILE = path.resolve(SCRIPTS_DIR, 'app', 'node-crawler', 'src', 'param_templates_with_predicted_types.json');
+const PAYLOAD_OUTPUT_FILE = path.resolve(SCRIPTS_DIR, 'app', 'node-crawler', 'src', 'payloads_vulners.txt');
+
+// Python / Bash script paths (relative-to-root style)
+const PARAM_TYPE_SCRIPT_PATH = path.resolve(SCRIPTS_DIR, 'app', 'node-crawler', 'src', 'param_type_pipeline.py');
+// If payload_gen.py is located in the ml folder as you said, build it like this:
+const PAYLOAD_GEN_SCRIPT_PATH = path.resolve(SCRIPTS_DIR, 'app', 'ml', 'payload_gen.py');
+// And the executor script:
+const EXEC_SCRIPT_PATH = path.resolve(SCRIPTS_DIR, 'app', 'ml', 'run_raw_cmds.sh');
+
+// ---------- Option B: Direct absolute assignment (explicit) ----------
+// If you prefer to hardcode the absolute path, include the leading slash and use path.resolve to normalize.
+const PAYLOAD_GEN_ABS = path.resolve('/home/arunexploit/develop/Smartfuzzier/backend/app/ml/payload_gen.py');
+const EXEC_SCRIPT_ABS    = path.resolve('/home/arunexploit/develop/Smartfuzzier/backend/app/ml/run_raw_cmds.sh');
+
+// ---------- Choose which one to use ----------
+// For example, prefer the env override if present, otherwise default to Option A:
+const finalPayloadGenPath = process.env.PAYLOAD_GEN_SCRIPT_PATH ? path.resolve(process.env.PAYLOAD_GEN_SCRIPT_PATH) : PAYLOAD_GEN_SCRIPT_PATH;
+const finalExecScriptPath = process.env.EXEC_SCRIPT_PATH ? path.resolve(process.env.EXEC_SCRIPT_PATH) : EXEC_SCRIPT_PATH;
+
+// ---------- Sanity-check helper (fail early with clear error) ----------
+function requireFile(p, friendlyName) {
+  if (!fs.existsSync(p)) {
+    const msg = `${friendlyName || 'File'} not found: ${p}\n` +
+                `Set the correct path or provide env var (e.g. PAYLOAD_GEN_SCRIPT_PATH).`;
+    // Log and throw so you see the problem immediately
+    console.error(msg);
+    throw new Error(msg);
+  }
+  return p;
+}
+
+// Example checks (uncomment the ones you want enforced)
+requireFile(finalPayloadGenPath, 'payload_gen.py');
+requireFile(finalExecScriptPath, 'run_raw_cmds.sh');
+// requireFile(MODEL_PATH, 'param_type_model.joblib'); // optional: only if model must exist
+// requireFile(PAYLOAD_LIB_PATH, 'payload_library.json'); // optional
+
+// Expose or export for other modules if this is a config file
+module.exports = {
+  SCRIPTS_ROOT,
+  SCRIPTS_DIR,
+  MODEL_PATH,
+  PAYLOAD_LIB_PATH,
+  TEMPLATE_INPUT_FILE,
+  TEMPLATE_OUTPUT_FILE,
+  PAYLOAD_OUTPUT_FILE,
+  PARAM_TYPE_SCRIPT_PATH,
+  finalPayloadGenPath,
+  finalExecScriptPath,
+};
+
 app.use(express.json({ limit: '2mb' }));
 app.use(cors()); // during development; restrict origin in production
 
@@ -32,7 +85,7 @@ function normalizeUrl(u) {
     nu.hash = '';
     // remove trailing slash except root
     if (nu.pathname !== '/' && nu.pathname.endsWith('/')) {
-      nu.pathname = nu.pathname.replace(/\/+$/,'');
+      nu.pathname = nu.pathname.replace(/\/*$/,'');
     }
     return nu.toString();
   } catch (e) {
@@ -43,18 +96,16 @@ function normalizeUrl(u) {
 // resilient navigation helper
 async function resilientGoto(page, targetUrl, opts = {}) {
   const baseTimeout = Number(opts.timeoutMs || 30000);
-  // (blockers should be set up by caller before calling this if desired)
   const tryOrder = opts.tryOrder || ['networkidle', 'load', 'domcontentloaded'];
 
   for (const mode of tryOrder) {
     try {
       await page.goto(targetUrl, { waitUntil: mode, timeout: baseTimeout });
-      // short grace wait for late XHRs (configurable)
+      // short grace wait for late XHRs
       await page.waitForTimeout(opts.postWaitMs || 800);
       return { ok: true, method: mode };
     } catch (err) {
       // try next mode
-      // if last mode, return failure object but include page content if possible
       if (mode === tryOrder[tryOrder.length - 1]) {
         try {
           const content = await page.content();
@@ -136,20 +187,17 @@ app.post('/crawl', async (req, res) => {
 
     // Collections for results
     const targetHost = (new URL(targetUrl)).host;
-    const networkRequests = []; // { url, method, hasPostData, resourceType }
-    const networkResponses = new Map(); // url -> status (last seen)
+    const networkRequests = []; 
+    const networkResponses = new Map(); 
     const linksSeen = new Set();
 
     // Capture requests and responses
     page.on('request', r => {
       try {
         const u = r.url();
-        // filter out data: and about:
         if (!u || u.startsWith('data:') || u.startsWith('about:')) return;
-        // optional same-host restriction
         const parsed = new URL(u);
         if (restrictToHost && parsed.host !== targetHost) return;
-        // skip blocked resource types (already aborted but double-check)
         if (blockedResourceTypes.includes(r.resourceType())) return;
 
         networkRequests.push({
@@ -171,31 +219,25 @@ app.post('/crawl', async (req, res) => {
     // Navigate with resilient helper
     const navResult = await resilientGoto(page, targetUrl, { timeoutMs, postWaitMs: 800, tryOrder: ['networkidle','load','domcontentloaded'] });
     if (!navResult.ok) {
-      // continue — we will still attempt extraction from partial content
       console.warn('Navigation fallback:', navResult.lastError || navResult.method);
     }
 
     // DOM extraction: forms + links
     const dom = await page.evaluate(() => {
-      // extract forms
+      // ... (existing form and link extraction logic) ...
       function normalizeInput(i) {
         const tag = i.tagName.toLowerCase();
         const typeAttr = (i.getAttribute('type') || '').toLowerCase();
         const type = typeAttr || (tag === 'textarea' ? 'textarea' : 'text');
-
-        // ignore non-params
         if (['submit','button','reset','image'].includes(type)) return null;
-
         const param = {
           name: i.getAttribute('name') || null,
           type,
-          required: i.hasAttribute('required') // boolean
+          required: i.hasAttribute('required')
         };
-
         if (tag === 'select') {
           param.options = Array.from(i.options).map(o => o.value || o.text);
         }
-        // skip unnamed unless hidden
         if (!param.name && type !== 'hidden') return null;
         return param;
       }
@@ -214,14 +256,12 @@ app.post('/crawl', async (req, res) => {
         if (params.length > 0) forms.push({ action, method, params });
       });
 
-      // extract links (hrefs)
       const rawLinks = [];
       document.querySelectorAll('a[href]').forEach(a => {
         const href = a.getAttribute('href');
         if (href) rawLinks.push(href);
       });
 
-      // inline JS hints (simple) - look for "/api" occurrences in scripts or fetch/axios tokens
       const scripts = Array.from(document.scripts || []).map(s => s.innerText || '');
       const combined = scripts.join('\n').slice(0, 20000);
       const hints = [];
@@ -245,7 +285,7 @@ app.post('/crawl', async (req, res) => {
     });
 
     // Build endpoint list: combine forms, links (GET with query keys), network requests
-    const endpointsMap = new Map(); // key -> endpoint object
+    const endpointsMap = new Map();
 
     function addEndpoint(obj) {
       try {
@@ -253,11 +293,9 @@ app.post('/crawl', async (req, res) => {
         const urln = normalizeUrl(obj.url || obj.action || obj.href);
         const key = method + '|' + urln;
         if (endpointsMap.has(key)) {
-          // merge info (e.g., params)
           const existing = endpointsMap.get(key);
           if (obj.params && Array.isArray(obj.params)) {
             existing.params = existing.params || [];
-            // merge param names without duplicates
             for (const p of obj.params) {
               if (!existing.params.find(x => x.name === p.name)) existing.params.push(p);
             }
@@ -292,7 +330,6 @@ app.post('/crawl', async (req, res) => {
     // add inline hints (best-effort)
     try {
       for (const h of dom.hints || []) {
-        // try resolve relative hint
         try {
           const abs = new URL(h, pageUrl).toString();
           addEndpoint({ url: abs, method: 'GET', note: 'inline_hint' });
@@ -302,9 +339,7 @@ app.post('/crawl', async (req, res) => {
 
     // Annotate endpoints with last seen status if available
     for (const [k, ep] of endpointsMap.entries()) {
-      // try to find any matching status recorded
       for (const [statusKey, status] of networkResponses.entries()) {
-        // statusKey = normalizeUrl + '|' + status
         if (statusKey.startsWith(ep.url)) {
           ep.status = Number(status);
           break;
@@ -312,10 +347,10 @@ app.post('/crawl', async (req, res) => {
       }
     }
 
-    // Limit number of endpoints returned to maxEndpoints (preserve priority by insertion order)
+    // Limit number of endpoints returned to maxEndpoints
     const endpoints = Array.from(endpointsMap.values()).slice(0, maxEndpoints);
 
-    // finalize forms to include normalized action + params with required flag and option values
+    // finalize forms
     const normalizedForms = dom.forms.map(f => {
       try {
         const abs = new URL(f.action, pageUrl).toString();
@@ -327,29 +362,85 @@ app.post('/crawl', async (req, res) => {
 
     await browser.close();
 
-    const responseData ={
+    const responseData = {
       url: targetUrl,
       navigatedTo: pageUrl,
       navigation: navResult,
-      counts:{
-        forms:normalizedForms.length,
+      counts: {
+        forms: normalizedForms.length,
+        endpoints: endpoints.length,
         links: linksSeen.size,
-        networkRequests:networkRequests.length
+        networkRequests: networkRequests.length
       },
       forms: normalizedForms,
       endpoints
-
     };
-    try{
-      const filePath =path.join(__dirname, "param_templates.json");
-      fs.writeFileSync(filePath,JSON.stringify(responseData, null, 2));
-      console.log(`Response data written to ${filePath}`);
+
+    // ----------------------------------------------------------
+    // STEP 1 (Cont.): Write Crawl Results (Input for ML)
+    // ----------------------------------------------------------
+    // FIX: Using the configured TEMPLATE_INPUT_FILE path for consistency with Python scripts
+    try {
+      fs.writeFileSync(TEMPLATE_INPUT_FILE, JSON.stringify(responseData, null, 2));
+      console.log(`\n[1/4] Crawler output written to ${TEMPLATE_INPUT_FILE}`);
+    } catch (err) {
+      console.error("[1/4] ERROR: Failed to write crawl output file:", err);
+      return res.status(500).json({ error: "Failed to write crawl output file for pipeline processing." });
+    }
     
-      
+    // ----------------------------------------------------------
+    // STEP 2: PARAMETER TYPE PREDICTION (param_type_pipeline.py)
+    // ----------------------------------------------------------
+    const paramTypeCmd = `python3 ${PARAM_TYPE_SCRIPT_PATH} --input ${TEMPLATE_INPUT_FILE} --model ${MODEL_PATH} --predict --output ${TEMPLATE_OUTPUT_FILE}`;
+    console.log(`[2/4] Running Parameter Prediction: ${paramTypeCmd}`);
+    
+    try {
+        execSync(paramTypeCmd, { stdio: 'inherit' });
+        console.log(`[2/4] Parameter Prediction Complete. Types saved to ${TEMPLATE_OUTPUT_FILE}`);
+    } catch (e) {
+        console.error(`[2/4] ERROR: Param type pipeline failed. Falling back to use raw input data. Error: ${e.message}`);
+        // Fallback: copy the initial file if prediction fails
+        fs.copyFileSync(TEMPLATE_INPUT_FILE, TEMPLATE_OUTPUT_FILE);
     }
-    catch(err){
-      console.error("Error writing to file:", err);
+
+    // ----------------------------------------------------------
+    // STEP 3: PAYLOAD GENERATION (payload_gen.py)
+    // ----------------------------------------------------------
+    const payloadGenCmd = `python3 ${PAYLOAD_GEN_SCRIPT_PATH} --param_file ${TEMPLATE_OUTPUT_FILE} --payload_file ${PAYLOAD_LIB_PATH} --output_path ${PAYLOAD_OUTPUT_FILE}`;
+    console.log(`[3/4] Running Payload Generation: ${payloadGenCmd}`);
+    
+    try {
+        execSync(payloadGenCmd, { stdio: 'inherit' });
+        console.log(`[3/4] Payload Generation Complete. Commands saved to ${PAYLOAD_OUTPUT_FILE}`);
+    } catch (e) {
+        console.error(`[3/4] ERROR: Payload generation failed. Error: ${e.message}`);
+        return res.status(500).json({ 
+            ...responseData, 
+            error: "Payload generation failed. Check Python script logs."
+        });
     }
+
+
+    // ----------------------------------------------------------
+    // STEP 4: COMMAND EXECUTION (run_raw_cmds.sh)
+    // ----------------------------------------------------------
+    // NOTE: Passing PAYLOAD_OUTPUT_FILE path to the bash script via the INFILE environment variable.
+    const execCmd = `bash ${EXEC_SCRIPT_PATH}`;
+    console.log(`[4/4] Running Raw Command Execution: ${execCmd}`);
+    
+    try {
+        execSync(execCmd, { 
+            stdio: 'inherit',
+            env: { ...process.env, INFILE: PAYLOAD_OUTPUT_FILE } 
+        });
+        console.log(`[4/4] Command Execution Complete. Responses saved to a new output directory.`);
+    } catch (e) {
+        console.error(`[4/4] ERROR: Command execution failed. Response data may not be saved. Error: ${e.message}`);
+    }
+    
+    // ----------------------------------------------------------
+    // FINAL RESPONSE
+    // ----------------------------------------------------------
     return res.json(responseData);
 
   } catch (err) {

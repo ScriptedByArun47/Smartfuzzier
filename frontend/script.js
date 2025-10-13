@@ -1,5 +1,10 @@
+// script.js - frontend for SmartFuzzer UI (scan + load response-parameter inspector)
+// Assumptions:
+// - /crawl POST endpoint exists for scanning (same as earlier).
+// - /api/responses GET endpoint returns JSON { responsesDir, fileCount, aggregate, perFile } as described earlier.
+
 (() => {
-  const API_BASE = location.origin.includes('file:') ? 'http://localhost:5001' : `${location.protocol}//${location.hostname}:5001`;
+  // --- DOM refs ---
   const scanForm = document.getElementById('scanForm');
   const urlInput = document.getElementById('url');
   const timeoutInput = document.getElementById('timeout');
@@ -16,11 +21,19 @@
   const rawJson = document.getElementById('rawJson');
   const downloadBtn = document.getElementById('downloadBtn');
 
+  // create Load Responses button and place next to Download JSON
+  const loadResponsesBtn = document.createElement('button');
+  loadResponsesBtn.textContent = 'Load Response Params';
+  loadResponsesBtn.className = 'btn secondary';
+  loadResponsesBtn.type = 'button';
+  // place in the controls area (adjacent to downloadBtn)
+  downloadBtn.parentNode.insertBefore(loadResponsesBtn, downloadBtn.nextSibling);
+
   let latestResult = null;
 
   function setStatus(s, color) {
     statusEl.textContent = s;
-    statusEl.style.background = color ? color : '';
+    statusEl.style.background = color || '';
   }
 
   function prettyJSON(obj) {
@@ -32,143 +45,7 @@
     return String(s).replace(/[&<>"'`]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
   }
 
-  function buildCurlExample(obj, placeholderName, placeholderToken) {
-    const url = obj.template || obj.url || obj.action || '';
-    const method = (obj.method || 'GET').toUpperCase();
-    const p = encodeURIComponent(`${placeholderToken}`);
-    if (method === 'GET') {
-      if (url.includes('$' + placeholderName + '$')) {
-        const curlUrl = url.replace('$' + placeholderName + '$', p);
-        return `curl -G "${curlUrl}"`;
-      } else {
-        const sep = url.includes('?') ? '&' : '?';
-        return `curl -G "${url}${sep}${placeholderName}=${p}"`;
-      }
-    } else {
-      return `curl -X POST "${url}" -d "${placeholderName}=${placeholderToken}&_=${Date.now()}"`;
-    }
-  }
-
-  function renderInputsTableHtml(form) {
-    const inputs = form.params || form.inputs || [];
-    if (!inputs.length) return '<div class="muted">No inputs discovered</div>';
-    let html = '<table class="small-table" style="width:100%"><thead><tr><th>Tag</th><th>Name</th><th>Type</th><th>Required</th></tr></thead><tbody>';
-    inputs.forEach(inp => {
-      html += `<tr><td>${escapeHtml(inp.tag || '-')}</td><td class="mono">${escapeHtml(inp.name || '<unnamed>')}</td><td>${escapeHtml(inp.type || (inp.param_type || '-'))}</td><td>${inp.required ? 'yes' : 'no'}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    return html;
-  }
-
-  function renderResults(data) {
-    latestResult = data;
-    const counts = data.counts || {};
-    formsCount.textContent = counts.forms ?? (data.forms ? data.forms.length : '—');
-    linksCount.textContent = counts.links ?? (data.links ? data.links.length : '—');
-    networkCount.textContent = counts.networkRequests ?? (data.endpoints ? data.endpoints.length : '—');
-
-    rawJson.textContent = prettyJSON(data);
-    mainResults.innerHTML = '';
-
-    const forms = data.forms || [];
-    const endpoints = data.endpoints || [];
-
-    // Forms Section
-    const formsSection = document.createElement('section');
-    const fsH = document.createElement('h3'); fsH.textContent = 'Forms';
-    formsSection.appendChild(fsH);
-
-    if (forms.length === 0) {
-      const p = document.createElement('p'); p.textContent = 'No forms found.'; p.className = 'muted';
-      formsSection.appendChild(p);
-    } else {
-      const table = document.createElement('table');
-      const thead = document.createElement('thead');
-      thead.innerHTML = '<tr><th>#</th><th>Action</th><th>Method</th><th>Inputs</th><th>Details</th></tr>';
-      table.appendChild(thead);
-      const tbody = document.createElement('tbody');
-
-      forms.forEach((f, i) => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${i+1}</td><td class="mono">${escapeHtml(f.action || f.template || f.url || '')}</td><td>${f.method}</td><td>${(f.params||f.inputs||[]).length}</td><td><button class="link-btn" data-toggle="form-${i}">Show</button></td>`;
-        tbody.appendChild(tr);
-
-        const expand = document.createElement('tr');
-        expand.style.display = 'none';
-        expand.id = `form-${i}`;
-        expand.innerHTML = `<td colspan="5">
-          <div class="panel-grid">
-            <div>
-              <h4>Inputs</h4>
-              ${renderInputsTableHtml(f)}
-            </div>
-            <div>
-              <h4>Examples</h4>
-              <div class="curl">${escapeHtml(buildCurlExample(f, ((f.params||[])[0] && (f.params||[])[0].name) || 'param', '[BASELINE]'))}</div>
-              <div style="margin-top:10px" class="muted">Raw JSON:</div>
-              <pre class="raw">${escapeHtml(JSON.stringify(f, null, 2))}</pre>
-            </div>
-          </div>
-        </td>`;
-        tbody.appendChild(expand);
-      });
-      table.appendChild(tbody);
-      formsSection.appendChild(table);
-    }
-
-    mainResults.appendChild(formsSection);
-
-    // Endpoints Section
-    const endpointsSection = document.createElement('section');
-    endpointsSection.style.marginTop = '16px';
-    const epH = document.createElement('h3'); epH.textContent = 'Network / Endpoints';
-    endpointsSection.appendChild(epH);
-
-    if (endpoints.length === 0) {
-      const p = document.createElement('p'); p.textContent = 'No network endpoints observed.'; p.className = 'muted';
-      endpointsSection.appendChild(p);
-    } else {
-      const table = document.createElement('table');
-      table.innerHTML = '<thead><tr><th>#</th><th>Method</th><th>URL</th><th>Params</th><th>Notes</th></tr></thead>';
-      const tbody = document.createElement('tbody');
-      endpoints.forEach((e, i) => {
-        const paramsText = (e.params || []).map(p => p.name || '?').join(', ') || '-';
-        const note = (e.hasPostData ? 'POST body' : '') + (e.status ? ` • ${e.status}` : '');
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${i+1}</td><td>${e.method || 'GET'}</td><td class="mono">${escapeHtml(e.url || e.action || '')}</td><td>${escapeHtml(paramsText)}</td><td>${escapeHtml(note)}</td>`;
-        tbody.appendChild(tr);
-
-        const expand = document.createElement('tr');
-        expand.innerHTML = `<td colspan="5">
-          <div style="display:flex; gap:12px; align-items:flex-start">
-            <div style="flex:1">
-              <pre class="raw">${escapeHtml(JSON.stringify(e, null, 2))}</pre>
-            </div>
-            <div style="width:360px">
-              <div><strong>Example curl</strong></div>
-              <div class="curl">${escapeHtml(buildCurlExample(e, (e.params && e.params[0] && e.params[0].name) || 'param', '[PLACEHOLDER]'))}</div>
-            </div>
-          </div>
-        </td>`;
-        tbody.appendChild(expand);
-      });
-      table.appendChild(tbody);
-      endpointsSection.appendChild(table);
-    }
-
-    mainResults.appendChild(endpointsSection);
-
-    document.querySelectorAll('.link-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-toggle');
-        const tr = document.getElementById(id);
-        if (!tr) return;
-        tr.style.display = (tr.style.display === 'none' || tr.style.display === '') ? '' : 'none';
-        btn.textContent = (btn.textContent === 'Show') ? 'Hide' : 'Show';
-      });
-    });
-  }
-
+  // --- existing scan code (lightweight) ---
   async function doScan(e) {
     e && e.preventDefault();
     const url = urlInput.value.trim();
@@ -190,6 +67,7 @@
       scanBtn.disabled = true;
       clearBtn.disabled = true;
 
+      const API_BASE = location.origin.includes('file:') ? 'http://localhost:5001' : `${location.protocol}//${location.hostname}:5001`;
       const resp = await fetch(`${API_BASE}/crawl`, {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
@@ -204,8 +82,9 @@
       }
 
       const data = await resp.json();
+      latestResult = data;
       setStatus('done', 'linear-gradient(90deg,#10b981,#34d399)');
-      renderResults(data);
+      renderCrawlResults(data);
     } catch (err) {
       console.error(err);
       setStatus('failed', 'linear-gradient(90deg,#fb7185,#ef4444)');
@@ -216,6 +95,61 @@
     }
   }
 
+  function renderCrawlResults(data) {
+    // counts
+    const counts = data.counts || {};
+    formsCount.textContent = counts.forms ?? (data.forms ? data.forms.length : '—');
+    linksCount.textContent = counts.links ?? (data.links ? data.links.length : '—');
+    networkCount.textContent = counts.networkRequests ?? (data.endpoints ? data.endpoints.length : '—');
+
+    rawJson.textContent = prettyJSON(data);
+
+    // simple forms/endpoints display
+    mainResults.innerHTML = '';
+
+    const forms = data.forms || [];
+    const endpoints = data.endpoints || [];
+
+    const fsec = document.createElement('section');
+    fsec.innerHTML = '<h3>Forms</h3>';
+    if (forms.length === 0) {
+      fsec.appendChild(Object.assign(document.createElement('p'), { textContent: 'No forms found.', className: 'muted' }));
+    } else {
+      const t = document.createElement('table');
+      t.innerHTML = '<thead><tr><th>#</th><th>Action</th><th>Method</th><th>Inputs</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      forms.forEach((f, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${i+1}</td><td class="mono">${escapeHtml(f.action||f.template||f.url||'')}</td><td>${escapeHtml(f.method||'GET')}</td><td>${(f.params||f.inputs||[]).length}</td>`;
+        tbody.appendChild(tr);
+      });
+      t.appendChild(tbody);
+      fsec.appendChild(t);
+    }
+    mainResults.appendChild(fsec);
+
+    const esec = document.createElement('section');
+    esec.style.marginTop = '12px';
+    esec.innerHTML = '<h3>Endpoints</h3>';
+    if (endpoints.length === 0) {
+      esec.appendChild(Object.assign(document.createElement('p'), { textContent: 'No endpoints observed.', className: 'muted' }));
+    } else {
+      const t = document.createElement('table');
+      t.innerHTML = '<thead><tr><th>#</th><th>Method</th><th>URL</th><th>Params</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      endpoints.forEach((e, i) => {
+        const paramsText = (e.params || []).map(p => p.name || '?').join(', ') || '-';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(e.method||'GET')}</td><td class="mono">${escapeHtml(e.url||e.action||'')}</td><td>${escapeHtml(paramsText)}</td>`;
+        tbody.appendChild(tr);
+      });
+      t.appendChild(tbody);
+      esec.appendChild(t);
+    }
+    mainResults.appendChild(esec);
+  }
+
+  // download JSON
   downloadBtn.addEventListener('click', () => {
     if (!latestResult) return alert('No data to download');
     const blob = new Blob([JSON.stringify(latestResult, null, 2)], {type:'application/json'});
@@ -227,6 +161,7 @@
     URL.revokeObjectURL(url);
   });
 
+  // clear
   clearBtn.addEventListener('click', () => {
     mainResults.innerHTML = '';
     rawJson.textContent = 'No data yet';
@@ -238,6 +173,169 @@
   });
 
   scanForm.addEventListener('submit', doScan);
-
   setStatus('idle', '');
+
+  // -----------------------------
+  // Response-params inspector
+  // -----------------------------
+  async function loadResponseParams() {
+    try {
+      loadResponsesBtn.disabled = true;
+      loadResponsesBtn.textContent = 'Loading...';
+      const resp = await fetch('/api/responses');
+      if (!resp.ok) {
+        const txt = await resp.text();
+        alert('Failed to load responses: ' + resp.status + ' ' + resp.statusText + '\n' + txt);
+        return;
+      }
+      const data = await resp.json();
+      renderResponseParams(data);
+    } catch (err) {
+      console.error(err);
+      alert('Error loading responses: ' + (err.message || err));
+    } finally {
+      loadResponsesBtn.disabled = false;
+      loadResponsesBtn.textContent = 'Load Response Params';
+    }
+  }
+
+  function renderResponseParams(data) {
+    mainResults.innerHTML = '';
+
+    const header = document.createElement('div');
+    header.className = 'summary';
+    header.innerHTML = `<div class="pill">Responses dir: ${escapeHtml(data.responsesDir || '')}</div>
+                        <div class="pill">Files: ${data.fileCount || 0}</div>`;
+    mainResults.appendChild(header);
+
+    // Aggregate table
+    const aggSection = document.createElement('section');
+    aggSection.style.marginTop = '12px';
+    aggSection.innerHTML = '<h3>Aggregated Parameters</h3>';
+    const filter = document.createElement('input');
+    filter.placeholder = 'Filter parameter name...';
+    filter.className = 'small';
+    filter.style.marginBottom = '8px';
+    aggSection.appendChild(filter);
+
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Parameter</th><th>Count</th><th>Details</th></tr></thead>';
+    const tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+    aggSection.appendChild(table);
+    mainResults.appendChild(aggSection);
+
+    // Per-file section
+    const fileSection = document.createElement('section');
+    fileSection.style.marginTop = '12px';
+    fileSection.innerHTML = '<h3>Per-file parameters</h3>';
+    const filesContainer = document.createElement('div');
+    fileSection.appendChild(filesContainer);
+    mainResults.appendChild(fileSection);
+
+    // store data for detail view
+    const agg = data.aggregate || [];
+    const perFile = data.perFile || [];
+    let shownAgg = agg;
+
+    function populateAgg(list) {
+      tbody.innerHTML = '';
+      list.forEach(item => {
+        const tr = document.createElement('tr');
+        const nameCell = document.createElement('td');
+        nameCell.className = 'mono';
+        nameCell.textContent = item.name;
+        const countCell = document.createElement('td');
+        countCell.textContent = item.count;
+        const actionsCell = document.createElement('td');
+        const openBtn = document.createElement('button');
+        openBtn.className = 'link-btn';
+        openBtn.textContent = 'Show';
+        openBtn.addEventListener('click', () => showOccurrences(item));
+        actionsCell.appendChild(openBtn);
+
+        tr.appendChild(nameCell);
+        tr.appendChild(countCell);
+        tr.appendChild(actionsCell);
+        tbody.appendChild(tr);
+      });
+    }
+
+    populateAgg(shownAgg);
+
+    // filter input
+    filter.addEventListener('input', (ev) => {
+      const q = ev.target.value.toLowerCase().trim();
+      shownAgg = agg.filter(x => x.name.toLowerCase().includes(q));
+      populateAgg(shownAgg);
+    });
+
+    // populate per-file list
+    filesContainer.innerHTML = '';
+    perFile.forEach(f => {
+      const card = document.createElement('div');
+      card.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
+      card.style.padding = '8px 0';
+      const h = document.createElement('h4');
+      h.textContent = f.file;
+      card.appendChild(h);
+      if (!f.params || f.params.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'muted';
+        p.textContent = 'No params found';
+        card.appendChild(p);
+      } else {
+        const ul = document.createElement('ul');
+        f.params.forEach(p => {
+          const li = document.createElement('li');
+          li.innerHTML = `<strong>${escapeHtml(p.name)}</strong> (${escapeHtml(p.type)}) - <small>${escapeHtml(JSON.stringify(p.meta))}</small>`;
+          ul.appendChild(li);
+        });
+        card.appendChild(ul);
+      }
+      filesContainer.appendChild(card);
+    });
+  }
+
+  function showOccurrences(item) {
+    // simple modal-like details panel (append to mainResults)
+    const detail = document.createElement('div');
+    detail.className = 'card';
+    detail.style.marginTop = '12px';
+    const h = document.createElement('h3');
+    h.textContent = `Occurrences for "${item.name}"`;
+    detail.appendChild(h);
+
+    item.occurrences.forEach(o => {
+      const d = document.createElement('div');
+      d.style.borderTop = '1px solid rgba(0,0,0,0.04)';
+      d.style.padding = '8px 0';
+      d.innerHTML = `<strong>File:</strong> ${escapeHtml(o.file)} — <strong>type:</strong> ${escapeHtml(o.type)}<pre class="raw" style="margin-top:6px">${escapeHtml(JSON.stringify(o.meta, null, 2))}</pre>`;
+      detail.appendChild(d);
+    });
+
+    // close button
+    const close = document.createElement('button');
+    close.textContent = 'Close';
+    close.className = 'btn secondary';
+    close.style.marginTop = '8px';
+    close.addEventListener('click', () => {
+      detail.remove();
+    });
+    detail.appendChild(close);
+
+    // insert detail panel at top of mainResults
+    mainResults.insertBefore(detail, mainResults.firstChild);
+    // scroll to top of results
+    mainResults.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // attach load responses button handler
+  loadResponsesBtn.addEventListener('click', loadResponseParams);
+
+  // also allow auto-load if URL has ?viewResponses=1
+  if (new URLSearchParams(window.location.search).get('viewResponses') === '1') {
+    loadResponseParams();
+  }
+
 })();

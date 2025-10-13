@@ -1,6 +1,7 @@
 import os
 import json
 import google.generativeai as genai
+import argparse
 
 # Configure API key
 # NOTE: Replace this placeholder with your actual, securely loaded API key
@@ -66,21 +67,16 @@ def generate_payloads(param_file, payload_file, model="gemini-2.5-flash"):
 
 if __name__ == "__main__":
     # NOTE: Ensure this file path is correct on the machine running the code
-    param_file_path = r"/home/arunexploit/develop/Smartfuzzier/node-crawler/src/param_templates_with_predicted_types.json"
-    payload_file_path = r"/home/arunexploit/develop/Smartfuzzier/backend/app/ml/payload_library.json"   
-    output_path = r"/home/arunexploit/develop/Smartfuzzier/node-crawler/src/payloads_vulners.txt"
-    print(f"Generating payloads using parameters from: {param_file_path}\n")
-    print(f"Payloads using to: {payload_file_path}\n")
+    ap = argparse.ArgumentParser(description="Generate payloads based on predicted parameter types.")
+    ap.add_argument("--param_file", required=True, help="Path to param_templates_with_predicted_types.json")
+    ap.add_argument("--payload_file", required=True, help="Path to payload_library.json")
+    ap.add_argument("--output_path", required=True, help="Path to write the output payloads_vulners.txt")
+    args = ap.parse_args()
+
+    print(f"Generating payloads using parameters from: {args.param_file}")
     
-    results = generate_payloads(param_file_path,payload_file_path)
+    results = generate_payloads(args.param_file, args.payload_file)
     
-    open(output_path, "w").write('\n'.join(results))
-    
-    
-    if results:
-        # Print the resulting list of strings clearly
-        print("--- Generated Placeholder Payloads ---")
-        print(f"payloads generated :{output_path}")
-        print(f"\nTotal payloads generated: {len(results)}")
-    else:
-        print("Payload generation failed or returned an empty list.")
+    # Save the output
+    open(args.output_path, "w").write('\n'.join(results) + '\n')
+    print(f"Payloads written to: {args.output_path}")

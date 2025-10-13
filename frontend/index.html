@@ -11,27 +11,28 @@
     <header>
       <div>
         <h1>SmartFuzzer — Crawler UI</h1>
-        <div class="sub">Stage 1 — discover forms & endpoints (lab only)</div>
+        <p class="sub">Stage 1 — discover forms & endpoints (lab only)</p>
       </div>
       <div class="row">
-        <div class="muted">Status:</div>
-        <div id="status" class="pill">idle</div>
+        <span class="muted">Status:</span>
+        <span id="status" class="pill">idle</span>
       </div>
     </header>
 
     <div class="grid">
-      <div class="card">
+      <!-- Scan form -->
+      <section class="card">
         <form id="scanForm">
-          <label>Target URL</label>
+          <label for="url">Target URL</label>
           <input id="url" type="text" placeholder="http://testphp.vulnweb.com" value="http://testphp.vulnweb.com" required />
 
           <div class="form-row">
             <div style="flex:1">
-              <label>Timeout (ms)</label>
+              <label for="timeout">Timeout (ms)</label>
               <input id="timeout" type="number" value="60000" />
             </div>
             <div style="width:120px">
-              <label>Max endpoints</label>
+              <label for="maxEndpoints">Max endpoints</label>
               <input id="maxEndpoints" type="number" value="200" />
             </div>
           </div>
@@ -39,11 +40,11 @@
           <div class="form-row">
             <div class="toggle">
               <input id="headless" type="checkbox" checked />
-              <label class="small">headless</label>
+              <label for="headless" class="small">headless</label>
             </div>
             <div class="toggle">
               <input id="allowNonLocal" type="checkbox" />
-              <label class="small">allowNonLocal</label>
+              <label for="allowNonLocal" class="small">allowNonLocal</label>
             </div>
           </div>
 
@@ -53,40 +54,38 @@
           </div>
 
           <div class="note">
-            <div class="danger">Safety:</div>
-            <div class="muted" style="margin-top:6px">
+            <strong class="danger">Safety:</strong>
+            <p class="muted" style="margin-top:6px">
               Only scan systems you own or are authorized to test. By default the crawler avoids non-local hosts.
-            </div>
+            </p>
           </div>
         </form>
-      </div>
+      </section>
 
-      <div class="card">
+      <!-- Results -->
+      <section class="card">
         <div id="outputArea" class="results">
           <div id="intro">
             <p class="muted">Run a scan and results will appear here. You can download the raw JSON for further analysis.</p>
           </div>
 
-          <div id="controls" style="display:flex; justify-content:space-between; align-items:center; gap:10px">
-            <div class="summary">
-              <span class="pill">Forms: <span id="formsCount">—</span></span>
-              <span class="pill">Links: <span id="linksCount">—</span></span>
-              <span class="pill">Network: <span id="networkCount">—</span></span>
-            </div>
-            <div class="row">
-              <button id="downloadBtn" class="btn secondary">Download JSON</button>
-            </div>
+          <div id="controls" class="flex-between">
+            <ul class="summary">
+              <li class="pill">Forms: <span id="formsCount">—</span></li>
+              <li class="pill">Links: <span id="linksCount">—</span></li>
+              <li class="pill">Network: <span id="networkCount">—</span></li>
+            </ul>
+            <button id="downloadBtn" class="btn secondary">Download JSON</button>
           </div>
 
           <div id="mainResults" style="margin-top:12px"></div>
 
           <div style="margin-top:12px">
-            <h3 style="margin:0 0 8px 0">Raw JSON</h3>
+            <h3>Raw JSON</h3>
             <pre id="rawJson" class="raw">No data yet</pre>
           </div>
-
         </div>
-      </div>
+      </section>
     </div>
 
     <footer>
