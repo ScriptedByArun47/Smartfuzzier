@@ -19,9 +19,13 @@
       </div>
     </header>
 
+    <nav class="tab-nav">
+      <button id="showScanBtn" class="btn primary selected">1. Crawler & Endpoint Discovery</button>
+      <button id="showResultsBtn" class="btn secondary">2. Fuzzing Results Viewer</button>
+    </nav>
+    
     <div class="grid">
-      <!-- Scan form -->
-      <section class="card">
+      <section class="card active" id="scanSection">
         <form id="scanForm">
           <label for="url">Target URL</label>
           <input id="url" type="text" placeholder="http://testphp.vulnweb.com" value="http://testphp.vulnweb.com" required />
@@ -39,18 +43,18 @@
 
           <div class="form-row">
             <div class="toggle">
-              <input id="headless" type="checkbox" checked />
-              <label for="headless" class="small">headless</label>
+              <input type="checkbox" id="headless" checked />
+              <label for="headless">Headless browser</label>
             </div>
             <div class="toggle">
-              <input id="allowNonLocal" type="checkbox" />
-              <label for="allowNonLocal" class="small">allowNonLocal</label>
+              <input type="checkbox" id="allowNonLocal" />
+              <label for="allowNonLocal">Allow non-local hosts</label>
             </div>
           </div>
-
-          <div style="margin-top:12px; display:flex; gap:8px">
-            <button id="scanBtn" class="btn">Scan</button>
-            <button id="clearBtn" type="button" class="btn secondary">Clear</button>
+          
+          <div class="form-row">
+            <button id="scanBtn" class="btn primary" type="submit">Start Scan & Fuzz</button>
+            <button id="clearBtn" class="btn secondary" type="button">Clear</button>
           </div>
 
           <div class="note">
@@ -60,11 +64,8 @@
             </p>
           </div>
         </form>
-      </section>
-
-      <!-- Results -->
-      <section class="card">
-        <div id="outputArea" class="results">
+        
+        <div id="outputArea" class="results" style="margin-top: 16px;">
           <div id="intro">
             <p class="muted">Run a scan and results will appear here. You can download the raw JSON for further analysis.</p>
           </div>
@@ -86,6 +87,14 @@
           </div>
         </div>
       </section>
+
+      <section class="card" id="resultsSection" style="display: none;">
+        <h2>Fuzzing Results Viewer <span id="resultsDirName" class="pill muted-pill"></span></h2>
+        <p id="resultsSummary" class="muted">Awaiting scan or result data...</p>
+        <div id="resultsContainer">
+            </div>
+      </section>
+      
     </div>
 
     <footer>

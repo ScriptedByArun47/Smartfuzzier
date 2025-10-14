@@ -9,6 +9,7 @@ const cors = require('cors');
 const { chromium } = require('playwright');
 const fs = require("fs");
 const path = require("path");
+const { readdir, readFile } = require('fs').promises;
 // ADDED: For executing external Python/Bash scripts
 const { execSync } = require('child_process');
 const app = express();
@@ -130,6 +131,81 @@ function extractQueryKeys(u) {
     return [];
   }
 }
+
+app.get('/api/latest-results', async (req, res) => {
+    // 1. Find the latest responses directory
+    const scriptDir = path.join(__dirname, ''); 
+    let latestDir = null;
+    
+    try {
+        const files = await readdir(scriptDir);
+        // Filter and sort directories starting with 'responses_' by name (which includes timestamp)
+        const responseDirs = files
+            .filter(f => f.startsWith('responses_') && fs.statSync(path.join(scriptDir, f)).isDirectory())
+            .sort()
+            .reverse(); // Latest is first
+        
+        if (responseDirs.length > 0) {
+            latestDir = path.join(scriptDir, responseDirs[0]);
+        }
+    } catch (e) {
+        console.error("Error reading directory for responses:", e);
+        return res.status(500).json({ error: "Failed to read results directory." });
+    }
+
+    if (!latestDir) {
+        return res.json({ directory: null, results: [], message: "No 'responses_' directory found." });
+    }
+
+    // 2. Read contents of the latest directory
+    const results = [];
+    try {
+        const dirFiles = await readdir(latestDir);
+        const baseNames = new Set(dirFiles.map(f => f.replace(/\.(html|meta|err)$/, '')));
+
+        for (const base of baseNames) {
+            if (!base) continue;
+
+            const htmlFile = path.join(latestDir, base + '.html');
+            const metaFile = path.join(latestDir, base + '.meta');
+            const errFile = path.join(latestDir, base + '.err');
+
+            let metaContent = '';
+            let htmlContent = '';
+            let errorContent = '';
+
+            try { metaContent = await readFile(metaFile, 'utf-8'); } catch (e) {}
+            try { htmlContent = await readFile(htmlFile, 'utf-8'); } catch (e) {}
+            try { errorContent = await readFile(errFile, 'utf-8'); } catch (e) {}
+
+            // Extract input command from meta file
+            const inputLineMatch = metaContent.match(/input_line: (.+)/i);
+            const curlCommand = inputLineMatch ? inputLineMatch[1].trim() : 'N/A';
+            
+            // Extract HTTP Status from HTML (which contains headers due to curl -i)
+            const statusMatch = htmlContent.match(/^HTTP\/[\d\.]+ (\d+)/m);
+            const status = statusMatch ? statusMatch[1] : 'N/A';
+
+            results.push({
+                fileName: base,
+                status: status,
+                curlCommand: curlCommand,
+                html: htmlContent,
+                error: errorContent,
+                meta: metaContent,
+            });
+        }
+    } catch (e) {
+        console.error("Error reading result files:", e);
+        return res.status(500).json({ error: `Failed to read files from ${path.basename(latestDir)}.` });
+    }
+
+    return res.json({
+        directory: path.basename(latestDir),
+        results: results.sort((a, b) => a.fileName.localeCompare(b.fileName)), // Sort by response01, response02, etc.
+        message: `${results.length} results loaded successfully.`
+    });
+});
 
 app.post('/crawl', async (req, res) => {
   const body = req.body || {};

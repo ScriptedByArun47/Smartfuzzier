@@ -1,9 +1,15 @@
 // script.js - frontend for SmartFuzzer UI (scan + load response-parameter inspector)
 // Assumptions:
 // - /crawl POST endpoint exists for scanning (same as earlier).
-// - /api/responses GET endpoint returns JSON { responsesDir, fileCount, aggregate, perFile } as described earlier.
+// - /api/latest-results GET endpoint returns JSON with fuzzing results.
 
 (() => {
+  // ----------------------------------------------------------------------
+  // FIX: Define the full URL for the Node.js API server (usually Port 5001)
+  // CHANGE THIS IF YOUR NODE SERVER RUNS ON A DIFFERENT HOST/PORT
+  const API_BASE_URL = 'http://localhost:5001'; 
+  // ----------------------------------------------------------------------
+
   // --- DOM refs ---
   const scanForm = document.getElementById('scanForm');
   const urlInput = document.getElementById('url');
@@ -21,321 +27,219 @@
   const rawJson = document.getElementById('rawJson');
   const downloadBtn = document.getElementById('downloadBtn');
 
-  // create Load Responses button and place next to Download JSON
-  const loadResponsesBtn = document.createElement('button');
-  loadResponsesBtn.textContent = 'Load Response Params';
-  loadResponsesBtn.className = 'btn secondary';
-  loadResponsesBtn.type = 'button';
-  // place in the controls area (adjacent to downloadBtn)
-  downloadBtn.parentNode.insertBefore(loadResponsesBtn, downloadBtn.nextSibling);
+  // NEW DOM refs for Results Viewer
+  const scanSection = document.getElementById('scanSection');
+  const resultsSection = document.getElementById('resultsSection');
+  const showScanBtn = document.getElementById('showScanBtn');
+  const showResultsBtn = document.getElementById('showResultsBtn');
+  const resultsSummary = document.getElementById('resultsSummary');
+  const resultsContainer = document.getElementById('resultsContainer');
+  const resultsDirName = document.getElementById('resultsDirName');
 
-  let latestResult = null;
-
-  function setStatus(s, color) {
-    statusEl.textContent = s;
-    statusEl.style.background = color || '';
+  // --- Utility ---
+  function setStatus(text, type = 'idle') {
+    statusEl.textContent = text;
+    statusEl.className = 'pill ' + type;
   }
 
-  function prettyJSON(obj) {
-    try { return JSON.stringify(obj, null, 2); } catch(e) { return String(obj); }
+  function escapeHtml(unsafe) {
+    if (!unsafe) return '';
+    return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
   }
 
-  function escapeHtml(s) {
-    if (s === null || s === undefined) return '';
-    return String(s).replace(/[&<>"'`]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
-  }
+  // --- Core Scan Logic ---
+  scanForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    setStatus('Scanning...', 'pending');
+    scanBtn.disabled = true;
 
-  // --- existing scan code (lightweight) ---
-  async function doScan(e) {
-    e && e.preventDefault();
-    const url = urlInput.value.trim();
-    if (!url) return alert('Enter a URL');
-
-    setStatus('scanning...', 'linear-gradient(90deg,#f59e0b,#f97316)');
-    mainResults.innerHTML = '';
-    rawJson.textContent = 'Waiting for response...';
-
-    const body = {
-      url,
-      headless: !!headlessInput.checked,
-      timeoutMs: Number(timeoutInput.value) || 60000,
-      allowNonLocal: !!allowNonLocalInput.checked,
-      maxEndpoints: Number(maxEndpointsInput.value) || 200
-    };
-
-    try {
-      scanBtn.disabled = true;
-      clearBtn.disabled = true;
-
-      const API_BASE = location.origin.includes('file:') ? 'http://localhost:5001' : `${location.protocol}//${location.hostname}:5001`;
-      const resp = await fetch(`${API_BASE}/crawl`, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(body)
-      });
-
-      if (!resp.ok) {
-        const txt = await resp.text();
-        setStatus('error', 'linear-gradient(90deg,#fb7185,#ef4444)');
-        rawJson.textContent = `Server error: ${resp.status} ${resp.statusText}\n\n${txt}`;
-        return;
-      }
-
-      const data = await resp.json();
-      latestResult = data;
-      setStatus('done', 'linear-gradient(90deg,#10b981,#34d399)');
-      renderCrawlResults(data);
-    } catch (err) {
-      console.error(err);
-      setStatus('failed', 'linear-gradient(90deg,#fb7185,#ef4444)');
-      rawJson.textContent = 'Request failed: ' + (err.message || err);
-    } finally {
-      scanBtn.disabled = false;
-      clearBtn.disabled = false;
-    }
-  }
-
-  function renderCrawlResults(data) {
-    // counts
-    const counts = data.counts || {};
-    formsCount.textContent = counts.forms ?? (data.forms ? data.forms.length : '—');
-    linksCount.textContent = counts.links ?? (data.links ? data.links.length : '—');
-    networkCount.textContent = counts.networkRequests ?? (data.endpoints ? data.endpoints.length : '—');
-
-    rawJson.textContent = prettyJSON(data);
-
-    // simple forms/endpoints display
-    mainResults.innerHTML = '';
-
-    const forms = data.forms || [];
-    const endpoints = data.endpoints || [];
-
-    const fsec = document.createElement('section');
-    fsec.innerHTML = '<h3>Forms</h3>';
-    if (forms.length === 0) {
-      fsec.appendChild(Object.assign(document.createElement('p'), { textContent: 'No forms found.', className: 'muted' }));
-    } else {
-      const t = document.createElement('table');
-      t.innerHTML = '<thead><tr><th>#</th><th>Action</th><th>Method</th><th>Inputs</th></tr></thead>';
-      const tbody = document.createElement('tbody');
-      forms.forEach((f, i) => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${i+1}</td><td class="mono">${escapeHtml(f.action||f.template||f.url||'')}</td><td>${escapeHtml(f.method||'GET')}</td><td>${(f.params||f.inputs||[]).length}</td>`;
-        tbody.appendChild(tr);
-      });
-      t.appendChild(tbody);
-      fsec.appendChild(t);
-    }
-    mainResults.appendChild(fsec);
-
-    const esec = document.createElement('section');
-    esec.style.marginTop = '12px';
-    esec.innerHTML = '<h3>Endpoints</h3>';
-    if (endpoints.length === 0) {
-      esec.appendChild(Object.assign(document.createElement('p'), { textContent: 'No endpoints observed.', className: 'muted' }));
-    } else {
-      const t = document.createElement('table');
-      t.innerHTML = '<thead><tr><th>#</th><th>Method</th><th>URL</th><th>Params</th></tr></thead>';
-      const tbody = document.createElement('tbody');
-      endpoints.forEach((e, i) => {
-        const paramsText = (e.params || []).map(p => p.name || '?').join(', ') || '-';
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(e.method||'GET')}</td><td class="mono">${escapeHtml(e.url||e.action||'')}</td><td>${escapeHtml(paramsText)}</td>`;
-        tbody.appendChild(tr);
-      });
-      t.appendChild(tbody);
-      esec.appendChild(t);
-    }
-    mainResults.appendChild(esec);
-  }
-
-  // download JSON
-  downloadBtn.addEventListener('click', () => {
-    if (!latestResult) return alert('No data to download');
-    const blob = new Blob([JSON.stringify(latestResult, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'crawler_result.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  });
-
-  // clear
-  clearBtn.addEventListener('click', () => {
-    mainResults.innerHTML = '';
-    rawJson.textContent = 'No data yet';
+    // Reset crawl-related counts
     formsCount.textContent = '—';
     linksCount.textContent = '—';
     networkCount.textContent = '—';
-    setStatus('idle', '');
-    latestResult = null;
-  });
-
-  scanForm.addEventListener('submit', doScan);
-  setStatus('idle', '');
-
-  // -----------------------------
-  // Response-params inspector
-  // -----------------------------
-  async function loadResponseParams() {
+    mainResults.innerHTML = '';
+    rawJson.textContent = 'No data yet';
+    
     try {
-      loadResponsesBtn.disabled = true;
-      loadResponsesBtn.textContent = 'Loading...';
-      const resp = await fetch('/api/responses');
-      if (!resp.ok) {
-        const txt = await resp.text();
-        alert('Failed to load responses: ' + resp.status + ' ' + resp.statusText + '\n' + txt);
+      // MODIFIED: Use API_BASE_URL for the /crawl endpoint
+      const response = await fetch(`${API_BASE_URL}/crawl`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: urlInput.value,
+          timeoutMs: Number(timeoutInput.value),
+          headless: headlessInput.checked,
+          allowNonLocal: allowNonLocalInput.checked,
+          maxEndpoints: Number(maxEndpointsInput.value)
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setStatus(`Error: ${data.error || response.statusText}`, 'danger');
         return;
       }
-      const data = await resp.json();
-      renderResponseParams(data);
-    } catch (err) {
-      console.error(err);
-      alert('Error loading responses: ' + (err.message || err));
-    } finally {
-      loadResponsesBtn.disabled = false;
-      loadResponsesBtn.textContent = 'Load Response Params';
-    }
-  }
 
-  function renderResponseParams(data) {
-    mainResults.innerHTML = '';
-
-    const header = document.createElement('div');
-    header.className = 'summary';
-    header.innerHTML = `<div class="pill">Responses dir: ${escapeHtml(data.responsesDir || '')}</div>
-                        <div class="pill">Files: ${data.fileCount || 0}</div>`;
-    mainResults.appendChild(header);
-
-    // Aggregate table
-    const aggSection = document.createElement('section');
-    aggSection.style.marginTop = '12px';
-    aggSection.innerHTML = '<h3>Aggregated Parameters</h3>';
-    const filter = document.createElement('input');
-    filter.placeholder = 'Filter parameter name...';
-    filter.className = 'small';
-    filter.style.marginBottom = '8px';
-    aggSection.appendChild(filter);
-
-    const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>Parameter</th><th>Count</th><th>Details</th></tr></thead>';
-    const tbody = document.createElement('tbody');
-    table.appendChild(tbody);
-    aggSection.appendChild(table);
-    mainResults.appendChild(aggSection);
-
-    // Per-file section
-    const fileSection = document.createElement('section');
-    fileSection.style.marginTop = '12px';
-    fileSection.innerHTML = '<h3>Per-file parameters</h3>';
-    const filesContainer = document.createElement('div');
-    fileSection.appendChild(filesContainer);
-    mainResults.appendChild(fileSection);
-
-    // store data for detail view
-    const agg = data.aggregate || [];
-    const perFile = data.perFile || [];
-    let shownAgg = agg;
-
-    function populateAgg(list) {
-      tbody.innerHTML = '';
-      list.forEach(item => {
-        const tr = document.createElement('tr');
-        const nameCell = document.createElement('td');
-        nameCell.className = 'mono';
-        nameCell.textContent = item.name;
-        const countCell = document.createElement('td');
-        countCell.textContent = item.count;
-        const actionsCell = document.createElement('td');
-        const openBtn = document.createElement('button');
-        openBtn.className = 'link-btn';
-        openBtn.textContent = 'Show';
-        openBtn.addEventListener('click', () => showOccurrences(item));
-        actionsCell.appendChild(openBtn);
-
-        tr.appendChild(nameCell);
-        tr.appendChild(countCell);
-        tr.appendChild(actionsCell);
-        tbody.appendChild(tr);
-      });
-    }
-
-    populateAgg(shownAgg);
-
-    // filter input
-    filter.addEventListener('input', (ev) => {
-      const q = ev.target.value.toLowerCase().trim();
-      shownAgg = agg.filter(x => x.name.toLowerCase().includes(q));
-      populateAgg(shownAgg);
-    });
-
-    // populate per-file list
-    filesContainer.innerHTML = '';
-    perFile.forEach(f => {
-      const card = document.createElement('div');
-      card.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
-      card.style.padding = '8px 0';
-      const h = document.createElement('h4');
-      h.textContent = f.file;
-      card.appendChild(h);
-      if (!f.params || f.params.length === 0) {
+      setStatus('Scan & Fuzz Complete (Check Results Tab)', 'ok');
+      
+      // Update crawl results display
+      formsCount.textContent = data.counts.forms;
+      linksCount.textContent = data.counts.links;
+      networkCount.textContent = data.counts.networkRequests;
+      rawJson.textContent = JSON.stringify(data, null, 2);
+      
+      // Render Endpoints
+      mainResults.innerHTML = '';
+      data.endpoints.forEach(ep => {
         const p = document.createElement('p');
-        p.className = 'muted';
-        p.textContent = 'No params found';
-        card.appendChild(p);
-      } else {
-        const ul = document.createElement('ul');
-        f.params.forEach(p => {
-          const li = document.createElement('li');
-          li.innerHTML = `<strong>${escapeHtml(p.name)}</strong> (${escapeHtml(p.type)}) - <small>${escapeHtml(JSON.stringify(p.meta))}</small>`;
-          ul.appendChild(li);
+        p.className = 'curl';
+        p.style.marginBottom = '6px';
+        p.innerHTML = `<strong>${ep.method}</strong>: <a href="${escapeHtml(ep.url)}" target="_blank">${escapeHtml(ep.url)}</a>` + 
+                      (ep.params && ep.params.length > 0 ? ` <em>(${ep.params.length} params)</em>` : '');
+        mainResults.appendChild(p);
+      });
+
+    } catch (error) {
+      // This is the error you were seeing, now hopefully fixed by using the full URL
+      setStatus('Network Error. Is the Node server running?', 'danger');
+      console.error('Fetch error:', error);
+    } finally {
+      scanBtn.disabled = false;
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    setStatus('idle');
+    formsCount.textContent = '—';
+    linksCount.textContent = '—';
+    networkCount.textContent = '—';
+    mainResults.innerHTML = '';
+    rawJson.textContent = 'No data yet';
+    resultsContainer.innerHTML = ''; // Clear results view as well
+    resultsSummary.textContent = 'Awaiting scan or result data...';
+    resultsDirName.textContent = '';
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    const data = rawJson.textContent;
+    if (data && data !== 'No data yet') {
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'crawl_results.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  });
+
+  // --- View Switching ---
+  function showView(view) {
+    if (view === 'scan') {
+      scanSection.style.display = 'block';
+      resultsSection.style.display = 'none';
+      showScanBtn.classList.add('primary', 'selected');
+      showScanBtn.classList.remove('secondary');
+      showResultsBtn.classList.remove('primary', 'selected');
+      showResultsBtn.classList.add('secondary');
+    } else if (view === 'results') {
+      scanSection.style.display = 'none';
+      resultsSection.style.display = 'block';
+      showResultsBtn.classList.add('primary', 'selected');
+      showResultsBtn.classList.remove('secondary');
+      showScanBtn.classList.remove('primary', 'selected');
+      showScanBtn.classList.add('secondary');
+      loadLatestResults(); // Load data when switching to results view
+    }
+  }
+
+  showScanBtn.addEventListener('click', () => showView('scan'));
+  showResultsBtn.addEventListener('click', () => showView('results'));
+  
+  // Start on scan view
+  showView('scan');
+
+
+  // --- Results Viewer Logic ---
+
+  /**
+   * Creates a collapsible card for a single request/response result.
+   */
+  function createResultCard(result) {
+    const card = document.createElement('div');
+    card.className = 'response-card';
+    
+    // Status pill based on HTTP code
+     let statusClass = 'pill';
+    if (result.status.startsWith('2')) statusClass += ' ok';
+    else if (result.status.startsWith('3')) statusClass += ' secondary';
+    else if (result.status.startsWith('4')) statusClass += ' danger';
+    else if (result.status.startsWith('5')) statusClass += ' danger';
+
+    card.innerHTML = `
+        <details>
+            <summary class="flex-between">
+                <div>
+                    <span class="${statusClass}">${result.status}</span>
+                    <strong style="margin-left: 10px;">${result.fileName.toUpperCase()}</strong>
+                    <span class="muted" style="margin-left: 15px;">cURL Command:</span>
+                    <code class="curl" style="display:inline-block; font-size: 11px; max-width: 500px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">${escapeHtml(result.curlCommand)}</code>
+                </div>
+            </summary>
+            <div class="panel-grid">
+                <div>
+                    <h4>HTTP Response (Headers + Body)</h4>
+                    <pre class="raw" style="max-height: 400px; overflow-x: auto;">${escapeHtml(result.html)}</pre>
+                    ${result.error ? `
+                        <h4>cURL Error Output</h4>
+                        <pre class="raw danger-text" style="max-height: 100px;">${escapeHtml(result.error)}</pre>
+                    ` : ''}
+                </div>
+               
+            </div>
+        </details>
+    `;
+    return card;
+  }
+
+  /**
+   * Fetches the latest results from the server and renders them.
+   */
+  async function loadLatestResults() {
+    resultsSummary.textContent = 'Loading latest results...';
+    resultsContainer.innerHTML = '';
+    resultsDirName.textContent = '...';
+
+    try {
+        // MODIFIED: Use API_BASE_URL for the /api/latest-results endpoint
+        const response = await fetch(`${API_BASE_URL}/api/latest-results`);
+        const data = await response.json();
+
+        if (data.error) {
+            resultsSummary.textContent = `Error loading results: ${data.error}`;
+            return;
+        }
+        
+        resultsDirName.textContent = data.directory || 'N/A';
+
+        if (data.results.length === 0) {
+            resultsSummary.textContent = data.message || 'No fuzzing results available yet. Run a scan first.';
+            return;
+        }
+
+        resultsSummary.textContent = `${data.results.length} responses loaded from the latest run in directory: ${data.directory}`;
+        
+        data.results.forEach(result => {
+            const card = createResultCard(result);
+            resultsContainer.appendChild(card);
         });
-        card.appendChild(ul);
-      }
-      filesContainer.appendChild(card);
-    });
-  }
 
-  function showOccurrences(item) {
-    // simple modal-like details panel (append to mainResults)
-    const detail = document.createElement('div');
-    detail.className = 'card';
-    detail.style.marginTop = '12px';
-    const h = document.createElement('h3');
-    h.textContent = `Occurrences for "${item.name}"`;
-    detail.appendChild(h);
-
-    item.occurrences.forEach(o => {
-      const d = document.createElement('div');
-      d.style.borderTop = '1px solid rgba(0,0,0,0.04)';
-      d.style.padding = '8px 0';
-      d.innerHTML = `<strong>File:</strong> ${escapeHtml(o.file)} — <strong>type:</strong> ${escapeHtml(o.type)}<pre class="raw" style="margin-top:6px">${escapeHtml(JSON.stringify(o.meta, null, 2))}</pre>`;
-      detail.appendChild(d);
-    });
-
-    // close button
-    const close = document.createElement('button');
-    close.textContent = 'Close';
-    close.className = 'btn secondary';
-    close.style.marginTop = '8px';
-    close.addEventListener('click', () => {
-      detail.remove();
-    });
-    detail.appendChild(close);
-
-    // insert detail panel at top of mainResults
-    mainResults.insertBefore(detail, mainResults.firstChild);
-    // scroll to top of results
-    mainResults.scrollIntoView({ behavior: 'smooth' });
-  }
-
-  // attach load responses button handler
-  loadResponsesBtn.addEventListener('click', loadResponseParams);
-
-  // also allow auto-load if URL has ?viewResponses=1
-  if (new URLSearchParams(window.location.search).get('viewResponses') === '1') {
-    loadResponseParams();
+    } catch (error) {
+        resultsSummary.textContent = 'Network or API error while fetching results.';
+        console.error('Error fetching latest results:', error);
+    }
   }
 
 })();
