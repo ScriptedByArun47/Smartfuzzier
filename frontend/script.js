@@ -168,78 +168,163 @@
    * Creates a collapsible card for a single request/response result.
    */
   function createResultCard(result) {
-    const card = document.createElement('div');
-    card.className = 'response-card';
-    
-    // Status pill based on HTTP code
-     let statusClass = 'pill';
-    if (result.status.startsWith('2')) statusClass += ' ok';
-    else if (result.status.startsWith('3')) statusClass += ' secondary';
-    else if (result.status.startsWith('4')) statusClass += ' danger';
-    else if (result.status.startsWith('5')) statusClass += ' danger';
+  const card = document.createElement('div');
+  card.className = 'response-card';
 
-    card.innerHTML = `
-        <details>
-            <summary class="flex-between">
-                <div>
-                    <span class="${statusClass}">${result.status}</span>
-                    <strong style="margin-left: 10px;">${result.fileName.toUpperCase()}</strong>
-                    <span class="muted" style="margin-left: 15px;">cURL Command:</span>
-                    <code class="curl" style="display:inline-block; font-size: 11px; max-width: 500px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">${escapeHtml(result.curlCommand)}</code>
-                </div>
-            </summary>
-            <div class="panel-grid">
-                <div>
-                    <h4>HTTP Response (Headers + Body)</h4>
-                    <pre class="raw" style="max-height: 400px; overflow-x: auto;">${escapeHtml(result.html)}</pre>
-                    ${result.error ? `
-                        <h4>cURL Error Output</h4>
-                        <pre class="raw danger-text" style="max-height: 100px;">${escapeHtml(result.error)}</pre>
-                    ` : ''}
-                </div>
-               
-            </div>
-        </details>
+  // --- HTTP STATUS PILL ---
+  let statusClass = 'pill';
+  if (result.status.startsWith('2')) statusClass += ' ok';
+  else if (result.status.startsWith('3')) statusClass += ' secondary';
+  else if (result.status.startsWith('4') || result.status.startsWith('5')) statusClass += ' danger';
+
+  // --- GEMINI ANALYSIS DISPLAY ---
+  let analysisPills = '';
+  let analysisPanel = '';
+
+  const ga = result.geminiAnalysis;
+  if (ga && (ga.vulnerability_type || ga.confidence)) {
+    const type = ga.vulnerability_type || 'Unknown';
+    const confidence = (ga.confidence || 'Low').toLowerCase();
+
+    let confidenceClass = 'pill';
+    if (confidence === 'high') confidenceClass += ' danger';
+    else if (confidence === 'medium') confidenceClass += ' warning';
+    else confidenceClass += ' ok';
+
+    // Pills in summary
+    analysisPills = `
+      <span class="pill highlight" style="margin-left: 10px; background-color:#f39c12; color:#fff;">${escapeHtml(type)}</span>
+      <span class="${confidenceClass}" style="margin-left: 5px;">${escapeHtml(confidence).toUpperCase()}</span>
     `;
-    return card;
+
+    // Reasoning summary collapsible section
+    const reasoningId = `reasoning-${Math.random().toString(36).substring(2, 9)}`;
+
+    analysisPanel = `
+      <div>
+        <h4>Gemini Analysis</h4>
+        <p><strong>Vulnerability Type:</strong> 
+          <span style="padding: 4px 8px; background-color:#e74c3c; color:white; border-radius:4px;">
+            ${escapeHtml(type)}
+          </span>
+        </p>
+        <p><strong>Confidence:</strong> ${escapeHtml(ga.confidence || 'N/A')}</p>
+        
+        <button class="toggle-btn" data-target="${reasoningId}" 
+          style="margin: 5px 0 10px; background: #2c3e50; color: #fff; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">
+          Show Details
+        </button>
+        
+        <div id="${reasoningId}" class="reasoning-details" style="display:none;">
+          <p><strong>Reasoning Summary:</strong></p>
+          <pre class="raw" style="max-height: 250px; overflow-y: auto;">${escapeHtml(ga.reasoning_summary || 'N/A')}</pre>
+        </div>
+      </div>
+    `;
+  } else {
+    analysisPills = '<span class="pill muted" style="margin-left: 10px;">No Gemini Analysis</span>';
+    analysisPanel = `
+      <div>
+        <h4>Gemini Analysis</h4>
+        <p class="muted">No Gemini analysis data available for this response.</p>
+      </div>
+    `;
   }
+  // ---------------------------------------
 
-  /**
-   * Fetches the latest results from the server and renders them.
-   */
-  async function loadLatestResults() {
-    resultsSummary.textContent = 'Loading latest results...';
-    resultsContainer.innerHTML = '';
-    resultsDirName.textContent = '...';
+  card.innerHTML = `
+    <details>
+      <summary class="flex-between">
+        <div>
+          <span class="${statusClass}">${result.status}</span>
+          <strong style="margin-left: 10px;">${result.fileName.toUpperCase()}</strong>
+          ${analysisPills}
+          <span class="muted" style="margin-left: 15px;">cURL Command:</span>
+          <code class="curl" style="display:inline-block; font-size: 11px; max-width: 500px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">
+            ${escapeHtml(result.curlCommand)}
+          </code>
+        </div>
+      </summary>
 
-    try {
-        // MODIFIED: Use API_BASE_URL for the /api/latest-results endpoint
-        const response = await fetch(`${API_BASE_URL}/api/latest-results`);
-        const data = await response.json();
+      <div class="panel-grid">
+        <!-- LEFT COLUMN: Gemini Analysis -->
+        ${analysisPanel}
 
-        if (data.error) {
-            resultsSummary.textContent = `Error loading results: ${data.error}`;
-            return;
-        }
-        
-        resultsDirName.textContent = data.directory || 'N/A';
+        <!-- RIGHT COLUMN: HTTP + cURL Error -->
+        <div>
+          <h4>HTTP Response (Headers + Body)</h4>
+          <pre class="raw" style="max-height: 400px; overflow-x: auto; width:800px ">${escapeHtml(result.html || 'No HTTP content available')}</pre>
+          ${result.error ? `
+            <h4>cURL Error Output</h4>
+            <pre class="raw danger-text" style="max-height: 100px;">${escapeHtml(result.error)}</pre>
+          ` : ''}
+        </div>
+      </div>
+    </details>
+  `;
 
-        if (data.results.length === 0) {
-            resultsSummary.textContent = data.message || 'No fuzzing results available yet. Run a scan first.';
-            return;
-        }
+  // Add show/hide functionality for reasoning
+  card.querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = document.getElementById(btn.dataset.target);
+      if (target.style.display === 'none') {
+        target.style.display = 'block';
+        btn.textContent = 'Hide Details';
+      } else {
+        target.style.display = 'none';
+        btn.textContent = 'Show Details';
+      }
+    });
+  });
 
-        resultsSummary.textContent = `${data.results.length} responses loaded from the latest run in directory: ${data.directory}`;
-        
-        data.results.forEach(result => {
-            const card = createResultCard(result);
-            resultsContainer.appendChild(card);
-        });
+  return card;
+}
 
-    } catch (error) {
-        resultsSummary.textContent = 'Network or API error while fetching results.';
-        console.error('Error fetching latest results:', error);
+/**
+ * Fetches the latest results from the server and renders them.
+ * Results are sorted by Gemini confidence: High → Medium → Low → None.
+ */
+async function loadLatestResults() {
+  resultsSummary.textContent = 'Loading latest results...';
+  resultsContainer.innerHTML = '';
+  resultsDirName.textContent = '...';
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/latest-results`);
+    const data = await response.json();
+
+    if (data.error) {
+      resultsSummary.textContent = `Error loading results: ${data.error}`;
+      return;
     }
+
+    resultsDirName.textContent = data.directory || 'N/A';
+
+    if (data.results.length === 0) {
+      resultsSummary.textContent = data.message || 'No fuzzing results available yet. Run a scan first.';
+      return;
+    }
+
+    // --- SORT RESULTS BY CONFIDENCE LEVEL ---
+    const confidenceRank = { high: 3, medium: 2, low: 1, none: 0 };
+    data.results.sort((a, b) => {
+      const ca = (a.geminiAnalysis?.confidence || 'none').toLowerCase();
+      const cb = (b.geminiAnalysis?.confidence || 'none').toLowerCase();
+      return confidenceRank[cb] - confidenceRank[ca]; // High first
+    });
+    // ----------------------------------------
+
+    resultsSummary.textContent = `${data.results.length} responses loaded from the latest run in directory: ${data.directory}`;
+
+    data.results.forEach(result => {
+      const card = createResultCard(result);
+      resultsContainer.appendChild(card);
+    });
+
+  } catch (error) {
+    resultsSummary.textContent = 'Network or API error while fetching results.';
+    console.error('Error fetching latest results:', error);
   }
+}
 
 })();

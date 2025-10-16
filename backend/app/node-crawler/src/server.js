@@ -38,7 +38,7 @@ const EXEC_SCRIPT_PATH = path.resolve(SCRIPTS_DIR, 'app', 'ml', 'run_raw_cmds.sh
 // If you prefer to hardcode the absolute path, include the leading slash and use path.resolve to normalize.
 const PAYLOAD_GEN_ABS = path.resolve('/home/arunexploit/develop/Smartfuzzier/backend/app/ml/payload_gen.py');
 const EXEC_SCRIPT_ABS    = path.resolve('/home/arunexploit/develop/Smartfuzzier/backend/app/ml/run_raw_cmds.sh');
-
+const RESPONSE_Analyzer_ABS = path.resolve('/home/arunexploit/develop/Smartfuzzier/backend/app/ml/analyze_responses_gemini.py');
 // ---------- Choose which one to use ----------
 // For example, prefer the env override if present, otherwise default to Option A:
 const finalPayloadGenPath = process.env.PAYLOAD_GEN_SCRIPT_PATH ? path.resolve(process.env.PAYLOAD_GEN_SCRIPT_PATH) : PAYLOAD_GEN_SCRIPT_PATH;
@@ -159,52 +159,74 @@ app.get('/api/latest-results', async (req, res) => {
 
     // 2. Read contents of the latest directory
     const results = [];
-    try {
-        const dirFiles = await readdir(latestDir);
-        const baseNames = new Set(dirFiles.map(f => f.replace(/\.(html|meta|err)$/, '')));
+try {
+    const dirFiles = await readdir(latestDir);
 
-        for (const base of baseNames) {
-            if (!base) continue;
+    // include gemini.json in the list of recognized extensions
+    const baseNames = new Set(dirFiles.map(f => f.replace(/\.(?:html|meta|err|gemini\.json)$/, '')));
 
-            const htmlFile = path.join(latestDir, base + '.html');
-            const metaFile = path.join(latestDir, base + '.meta');
-            const errFile = path.join(latestDir, base + '.err');
+    for (const base of baseNames) {
+        if (!base) continue;
 
-            let metaContent = '';
-            let htmlContent = '';
-            let errorContent = '';
+        const htmlFile = path.join(latestDir, base + '.html');
+        const metaFile = path.join(latestDir, base + '.meta');
+        const errFile = path.join(latestDir, base + '.err');
+        const analysisFile = path.join(latestDir, base + '.gemini.json');
 
-            try { metaContent = await readFile(metaFile, 'utf-8'); } catch (e) {}
-            try { htmlContent = await readFile(htmlFile, 'utf-8'); } catch (e) {}
-            try { errorContent = await readFile(errFile, 'utf-8'); } catch (e) {}
+        let metaContent = '';
+        let htmlContent = '';
+        let errorContent = '';
+        let analysisContent = '';
+        let geminiAnalysis = null;
 
-            // Extract input command from meta file
-            const inputLineMatch = metaContent.match(/input_line: (.+)/i);
-            const curlCommand = inputLineMatch ? inputLineMatch[1].trim() : 'N/A';
-            
-            // Extract HTTP Status from HTML (which contains headers due to curl -i)
-            const statusMatch = htmlContent.match(/^HTTP\/[\d\.]+ (\d+)/m);
-            const status = statusMatch ? statusMatch[1] : 'N/A';
+        try { metaContent = await readFile(metaFile, 'utf-8'); } catch (e) {}
+        try { htmlContent = await readFile(htmlFile, 'utf-8'); } catch (e) {}
+        try { errorContent = await readFile(errFile, 'utf-8'); } catch (e) {}
+        try { analysisContent = await readFile(analysisFile, 'utf-8'); } catch (e) {}
 
-            results.push({
-                fileName: base,
-                status: status,
-                curlCommand: curlCommand,
-                html: htmlContent,
-                error: errorContent,
-                meta: metaContent,
-            });
+        if (analysisContent) {
+            try {
+                const parsed = JSON.parse(analysisContent);
+                // normalize to only the expected fields (if you prefer)
+                geminiAnalysis = {
+                    vulnerability_type: parsed.vulnerability_type || parsed.vuln || null,
+                    confidence: parsed.confidence || null,
+                    reasoning_summary: parsed.reasoning_summary || parsed.reason || null
+                };
+            } catch (e) {
+                console.warn(`Warning: invalid JSON in ${analysisFile}:`, e.message);
+                geminiAnalysis = null;
+            }
         }
-    } catch (e) {
-        console.error("Error reading result files:", e);
-        return res.status(500).json({ error: `Failed to read files from ${path.basename(latestDir)}.` });
-    }
 
-    return res.json({
-        directory: path.basename(latestDir),
-        results: results.sort((a, b) => a.fileName.localeCompare(b.fileName)), // Sort by response01, response02, etc.
-        message: `${results.length} results loaded successfully.`
-    });
+        // Extract input command from meta file
+        const inputLineMatch = metaContent.match(/input_line: (.+)/i);
+        const curlCommand = inputLineMatch ? inputLineMatch[1].trim() : 'N/A';
+
+        // Extract HTTP Status from HTML (which contains headers due to curl -i)
+        const statusMatch = htmlContent.match(/^HTTP\/[\d\.]+ (\d+)/m);
+        const status = statusMatch ? statusMatch[1] : 'N/A';
+
+        results.push({
+            fileName: base,
+            status: status,
+            curlCommand: curlCommand,
+            html: htmlContent,
+            error: errorContent,
+            meta: metaContent,
+            geminiAnalysis: geminiAnalysis // either null or object with the 3 fields
+        });
+    }
+} catch (e) {
+    console.error("Error reading result files:", e);
+    return res.status(500).json({ error: `Failed to read files from ${path.basename(latestDir)}.` });
+}
+
+return res.json({
+    directory: path.basename(latestDir),
+    results: results.sort((a, b) => a.fileName.localeCompare(b.fileName)),
+    message: `${results.length} results loaded successfully.`
+});
 });
 
 app.post('/crawl', async (req, res) => {
@@ -513,7 +535,17 @@ app.post('/crawl', async (req, res) => {
     } catch (e) {
         console.error(`[4/4] ERROR: Command execution failed. Response data may not be saved. Error: ${e.message}`);
     }
-    
+
+    // ----------------------------------------------------------
+    // STEP 5: RESPONSE ANALYSIS (analyze_responses_gemini.py)
+    // ---------------------------------------------------------- 
+    const analyze = `python3  ${RESPONSE_Analyzer_ABS} `;
+    try{
+      execSync(analyze, { stdio: 'inherit' });
+      console.log(`[5/4] Response Analysis Complete.`);
+    }catch(e){
+      console.error(`[5/4] ERROR: Response analysis failed. Error: ${e.message}`);
+    }
     // ----------------------------------------------------------
     // FINAL RESPONSE
     // ----------------------------------------------------------

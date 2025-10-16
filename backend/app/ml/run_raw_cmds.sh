@@ -183,7 +183,7 @@ done
 # Show a short tail of outputs (useful for quick inspection)
 echo ""
 echo "[+] Showing last $TAIL_LINES lines of each stdout/stderr (if present):"
-for num in $(printf '%s\n' "${!num_to_cmd[@]}" | sort); do
+for num in $(echo '%s\n' "${!num_to_cmd[@]}" | sort); do
   of="${num_to_outfile[$num]}"
   ef="${num_to_errfile[$num]}"
   echo "---- Task #$num: ${num_to_cmd[$num]} ----"
