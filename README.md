@@ -28,4 +28,9 @@ pip install scikit-learn pandas joblib numpy
 ```bash
 python param_type_pipeline.py --input param_templates.json --train --model param_type_model.joblib
 ```
-
+## run 
+```bash
+node server.js 
+```
+## frontend 
+open with live server index.html
